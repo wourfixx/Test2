@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Video Metadata Editor</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+body{background:#111;color:#eee;padding:20px;max-width:900px;margin:0 auto}
+h1{font-size:20px;margin-bottom:15px;color:#0cf}
+#drop{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;cursor:pointer;margin-bottom:15px}
+#drop:hover{border-color:#0cf}
+#drop input{display:none}
+video{width:100%;border-radius:8px;margin-bottom:15px;background:#000}
+label{display:block;font-size:12px;color:#999;margin-top:10px}
+input[type=text],input[type=number],select{width:100%;padding:8px;background:#1a1a1a;border:1px solid #333;color:#eee;border-radius:6px;font-size:14px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chk{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:#ccc}
+.chk input{width:16px;height:16px;accent-color:#0cf}
+button{width:100%;padding:14px;background:#0cf;color:#000;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;margin-top:15px}
+button:disabled{opacity:.4;cursor:not-allowed}
+#log{background:#000;color:#0f0;font-family:monospace;font-size:12px;padding:10px;border-radius:6px;max-height:200px;overflow-y:auto;margin-top:10px;white-space:pre-wrap;display:none}
+#log.on{display:block}
+#bar{height:6px;background:#333;border-radius:3px;margin-top:10px;overflow:hidden;display:none}
+#bar.on{display:block}
+#bar>div{height:100%;width:0;background:#0cf;transition:width .3s}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+
+<h1>Video Metadata Editor</h1>
+
+<div id="drop">
+<input type="file" id="file" accept="video/*">
+<p>📁 Нажми или перетащи видео</p>
+</div>
+
+<div id="editor" class="hide">
+<video id="prev" controls></video>
+
+<label>Название (title)</label>
+<input type="text" id="m_title" placeholder="My Video">
+
+<label>Автор (artist)</label>
+<input type="text" id="m_artist" placeholder="Author">
+
+<label>Дата (date)</label>
+<input type="text" id="m_date" placeholder="2026-10-02">
+
+<label>GPS</label>
+<input type="text" id="m_gps" placeholder="55.75,37.61">
+
+<div class="row">
+<div>
+<label>Разрешение</label>
+<select id="res">
+<option value="orig">Оригинал</option>
+<option value="1920x1080">1920x1080</option>
+<option value="1280x720">1280x720</option>
+<option value="1080x1920">1080x1920 (вертикальное)</option>
+<option value="720x1280">720x1280 (вертикальное)</option>
+</select>
+</div>
+<div>
+<label>FPS</label>
+<select id="fps">
+<option value="orig">Оригинал</option>
+<option value="24">24</option>
+<option value="30">30</option>
+<option value="60">60</option>
+</select>
+</div>
+</div>
+
+<div class="row">
+<div>
+<label>Битрейт (kbps)</label>
+<input type="number" id="br" value="2000">
+</div>
+<div>
+<label>Кодек</label>
+<select id="codec">
+<option value="libx264">H.264</option>
+<option value="libx265">H.265</option>
+</select>
+</div>
+</div>
+
+<div class="chk"><input type="checkbox" id="c_meta" checked><span>Удалить все метаданные</span></div>
+<div class="chk"><input type="checkbox" id="c_audio" checked><span>Изменить аудио (pitch +5%)</span></div>
+<div class="chk"><input type="checkbox" id="c_mirror"><span>Зеркалировать</span></div>
+<div class="chk"><input type="checkbox" id="c_noise"><span>Добавить шум</span></div>
+
+<button id="go">Обработать и скачать</button>
+<div id="bar"><div></div></div>
+<div id="log"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.min.js"></script>
+<script>
+const {FFmpeg} = FFmpegWASM;
+const {fetchFile} = FFmpegUtil;
+let ff=null, file=null;
+
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+
+function log(t){
+  logEl.classList.add('on');
+  logEl.textContent += t + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setBar(p){
+  $('bar').classList.add('on');
+  $('bar').firstElementChild.style.width = p + '%';
+}
+
+async function initFF(){
+  if(ff) return ff;
+  log('Загрузка FFmpeg...');
+  ff = new FFmpeg();
+  ff.on('progress', ({progress}) => setBar(Math.round(progress*100)));
+  await ff.load({
+    coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+    wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm'
+  });
+  log('FFmpeg готов.');
+  return ff;
+}
+
+$('drop').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', e => loadFile(e.target.files[0]));
+$('drop').addEventListener('dragover', e => e.preventDefault());
+$('drop').addEventListener('drop', e => {
+  e.preventDefault();
+  loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(f){
+  if(!f || !f.type.startsWith('video/')){ alert('Нужен видеофайл'); return; }
+  file = f;
+  $('prev').src = URL.createObjectURL(f);
+  $('drop').classList.add('hide');
+  $('editor').classList.remove('hide');
+  log('Файл: ' + f.name + ' (' + (f.size/1048576).toFixed(1) + ' MB)');
+}
+
+$('go').addEventListener('click', async () => {
+  if(!file) return;
+  $('go').disabled = true;
+  logEl.textContent = '';
+  try{
+    const f = await initFF();
+    const inName = 'in' + (file.name.match(/\.[^.]+$/)?.[0] || '.mp4');
+    await f.writeFile(inName, await fetchFile(file));
+
+    const vf = [];
+    if($('c_mirror').checked) vf.push('hflip');
+    if($('c_noise').checked) vf.push('noise=alls=2:allf=t');
+    const res = $('res').value;
+    if(res !== 'orig'){ const [w,h] = res.split('x'); vf.push('scale=' + w + ':' + h); }
+    const fps = $('fps').value;
+    if(fps !== 'orig') vf.push('fps=' + fps);
+
+    const af = [];
+    if($('c_audio').checked){
+      af.push('asetrate=48000*1.05');
+      af.push('aresample=48000');
+      af.push('atempo=1.05');
+      af.push('asetrate=48000*1.05');
+    }
+
+    const args = ['-i', inName];
+    if(vf.length) args.push('-vf', vf.join(','));
+    if(af.length) args.push('-af', af.join(','));
+    args.push('-c:v', $('codec').value);
+    args.push('-b:v', $('br').value + 'k');
+    args.push('-c:a', 'aac', '-b:a', '128k');
+
+    if($('c_meta').checked) args.push('-map_metadata', '-1');
+    const t = $('m_title').value; if(t) args.push('-metadata', 'title=' + t);
+    const a = $('m_artist').value; if(a) args.push('-metadata', 'artist=' + a);
+    const d = $('m_date').value; if(d) args.push('-metadata', 'date=' + d);
+    const g = $('m_gps').value; if(g){ args.push('-metadata', 'location=' + g); args.push('-metadata', 'location-eng=' + g); }
+
+    const outName = 'out_' + Date.now() + '.mp4';
+    args.push(outName);
+
+    log('FFmpeg: ' + args.join(' '));
+    await f.exec(args);
+    log('Готово. Скачиваю...');
+
+    const data = await f.readFile(outName);
+    const blob = new Blob([data.buffer], {type: 'video/mp4'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = outName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    log('Файл скачан: ' + outName);
+  } catch(err){
+    log('ОШИБКА: ' + err.message);
+    console.error(err);
+  } finally {
+    $('go').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
